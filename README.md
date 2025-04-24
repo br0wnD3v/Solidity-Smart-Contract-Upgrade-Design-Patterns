@@ -1978,3 +1978,157 @@ contract MetamorphicContractV2OZ is Ownable {
 Factory deploys new proxies pointing to implementations
 Often combined with other proxy patterns
 Useful for managing multiple proxy instances
+
+### Custom Implementation
+```solidity
+// Implementation contract
+contract FactoryImplementation {
+    uint256 public value;
+    address public owner;
+    
+    function initialize(address _owner) public {
+        require(owner == address(0), "Already initialized");
+        owner = _owner;
+        value = 42;
+    }
+    
+    function setValue(uint256 _value) public {
+        require(msg.sender == owner, "Only owner");
+        value = _value;
+    }
+}
+
+// Proxy contract
+contract FactoryProxy {
+    address public implementation;
+    
+    constructor(address _implementation, bytes memory _data) {
+        implementation = _implementation;
+        
+        // Initialize the proxy
+        if(_data.length > 0) {
+            (bool success, ) = implementation.delegatecall(_data);
+            require(success, "Initialization failed");
+        }
+    }
+    
+    fallback() external payable {
+        assembly {
+            calldatacopy(0, 0, calldatasize())
+            let result := delegatecall(gas(), sload(0), 0, calldatasize(), 0, 0)
+            returndatacopy(0, 0, returndatasize())
+            switch result
+            case 0 { revert(0, returndatasize()) }
+            default { return(0, returndatasize()) }
+        }
+    }
+    
+    receive() external payable {}
+}
+
+// Factory to create proxies
+contract ProxyFactory {
+    address public implementation;
+    address public owner;
+    
+    constructor(address _implementation) {
+        implementation = _implementation;
+        owner = msg.sender;
+    }
+    
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only owner");
+        _;
+    }
+    
+    function setImplementation(address _implementation) public onlyOwner {
+        implementation = _implementation;
+    }
+    
+    function createProxy(address _owner) public returns (address) {
+        bytes memory initData = abi.encodeWithSignature("initialize(address)", _owner);
+        FactoryProxy proxy = new FactoryProxy(implementation, initData);
+        return address(proxy);
+    }
+}
+```
+### OpenZeppelin Implementation
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+import "@openzeppelin/contracts/proxy/Clones.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+
+// Implementation contract
+contract FactoryImplementationOZ is Initializable, OwnableUpgradeable {
+    uint256 public value;
+    
+    function initialize() public initializer {
+        __Ownable_init();
+        value = 42;
+    }
+    
+    function setValue(uint256 _value) public onlyOwner {
+        value = _value;
+    }
+}
+
+// Factory to create proxies
+contract ProxyFactoryOZ is Ownable {
+    address public implementation;
+    mapping(address => address) public userToProxy;
+    
+    event ProxyCreated(address indexed user, address indexed proxy);
+    
+    constructor(address _implementation) {
+        implementation = _implementation;
+    }
+    
+    function setImplementation(address _implementation) public onlyOwner {
+        implementation = _implementation;
+    }
+    
+    function createProxy() public returns (address proxy) {
+        // Create a clone
+        proxy = Clones.clone(implementation);
+        
+        // Initialize the proxy
+        FactoryImplementationOZ(proxy).initialize();
+        
+        // Transfer ownership to the caller
+        FactoryImplementationOZ(proxy).transferOwnership(msg.sender);
+        
+        // Store the mapping
+        userToProxy[msg.sender] = proxy;
+        
+        emit ProxyCreated(msg.sender, proxy);
+    }
+    
+    // Create deterministic proxy
+    function createDeterministicProxy(bytes32 salt) public returns (address proxy) {
+        proxy = Clones.cloneDeterministic(implementation, keccak256(abi.encodePacked(msg.sender, salt)));
+        
+        // Initialize the proxy
+        FactoryImplementationOZ(proxy).initialize();
+        
+        // Transfer ownership to the caller
+        FactoryImplementationOZ(proxy).transferOwnership(msg.sender);
+        
+        // Store the mapping
+        userToProxy[msg.sender] = proxy;
+        
+        emit ProxyCreated(msg.sender, proxy);
+    }
+    
+    // Predict the address for a deterministic proxy
+    function predictDeterministicAddress(bytes32 salt) public view returns (address) {
+        return Clones.predictDeterministicAddress(
+            implementation,
+            keccak256(abi.encodePacked(msg.sender, salt)),
+            address(this)
+        );
+    }
+}
+```
